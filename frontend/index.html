@@ -1,0 +1,64 @@
+<!--
+ * @Descripttion: 前端异常捕获
+ * @Author: jinxiaodong
+ * @Date: 2020-12-02 10:11:03
+ * @LastEditors: jinxiaodong
+ * @LastEditTime: 2020-12-03 10:27:49
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Document</title>
+</head>
+<body>
+  <img src="test.png" alt="">
+  <script>
+    function errDemo1() {
+      console.log('1->begin')
+      error
+      console.log('1->end')
+    }
+    setTimeout(() => {
+      errDemo1()
+    })
+    new Promise((resolve, reject) => {
+      error()
+    })
+    window.addEventListener("unhandledrejection", e => {
+      throw e.reason
+    });
+    window.addEventListener('error', args => {
+      console.log(
+        'error event:', args
+      );
+      uploadError(args)
+      return true;
+    }, true);
+    function uploadError({
+      lineno,
+      colno,
+      error: {
+        stack
+      },
+      timeStamp,
+      message,
+      filename
+    }) {
+      // 过滤
+      const info = {
+        lineno,
+        colno,
+        stack,
+        timeStamp,
+        message,
+        filename
+      }
+      const str = window.btoa(JSON.stringify(info))
+      const host = 'http://localhost:7001/monitor/error'
+      new Image().src = `${host}?info=${str}`
+    }
+  </script>
+</body>
+</html>
