@@ -3,11 +3,12 @@
  * @Author: jinxiaodong
  * @Date: 2020-12-03 10:17:24
  * @LastEditors: jinxiaodong
- * @LastEditTime: 2020-12-03 14:39:58
+ * @LastEditTime: 2020-12-04 11:53:58
  */
 const Controller = require('egg').Controller
 const fs = require('fs')
 const path = require('path')
+const StackParser = require('../utils/stackParser')
 
 class MonitorController extends Controller {
   async index() {
@@ -15,8 +16,11 @@ class MonitorController extends Controller {
     const { info } = ctx.query
     const json = JSON.parse(Buffer.from(info, 'base64').toString('utf-8'))
     console.log('fronterror:', json)
+    const stackParser = new StackParser(path.join(this.config.baseDir, 'uploads'))
+    const stackFrame = stackParser.parseStackTrack(json.stack, json.message)
+    const originStack = await stackParser.getOriginalErrorStack(stackFrame)
     // 记录错误日志
-    ctx.getLogger('frontendLogger').error(json)
+    ctx.getLogger('frontendLogger').error(json, originStack)
     ctx.body = ''
   }
 

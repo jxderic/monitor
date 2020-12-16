@@ -3,7 +3,7 @@
  * @Author: jinxiaodong
  * @Date: 2020-12-02 10:11:03
  * @LastEditors: jinxiaodong
- * @LastEditTime: 2020-12-03 10:27:49
+ * @LastEditTime: 2020-12-04 16:05:57
 -->
 <!DOCTYPE html>
 <html lang="en">
@@ -56,7 +56,7 @@
         filename
       }
       const str = window.btoa(JSON.stringify(info))
-      const host = 'http://localhost:7001/monitor/error'
+      const host = 'http://localhost:7002/monitor/error'
       new Image().src = `${host}?info=${str}`
     }
   </script>
