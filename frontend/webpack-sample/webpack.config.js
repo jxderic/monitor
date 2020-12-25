@@ -10,7 +10,7 @@ const HtmlWebpackPlugin = require('html-webpack-plugin');
 // dist清理
 const { CleanWebpackPlugin } = require('clean-webpack-plugin')
 // 自动上传Map
-const UploadSourceMapWebpackPlugin = require('../plugin/uploadSourceMapWebPackPlugin')
+const UploadSourceMapWebpackPlugin = require('./plugin/uploadSourceMapWebPackPlugin')
 
 module.exports = {
   devtool: 'source-map', // SourceMap,

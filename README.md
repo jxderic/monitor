@@ -374,17 +374,380 @@ new Image().src = 'http://localhost:7001/monitor/error'+ '?info=xxxxxx'
 
 我们来看下error事件参数：
 
+| 属性名称      | 含义          | 类型   |
+| ------------- | ------------- | ------ |
+| message       | 错误信息      | string |
+| filename      | 异常的资源url | string |
+| lineno        | 异常行号      | int    |
+| colno         | 异常列号      | int    |
+| error         | 错误对象      | object |
+| error.message | 错误信息      | string |
+| error.stack   | 错误堆栈      | string |
+
+其中核心的应该是错误栈，其实我们定位错误最主要的就是错误栈。
+
+错误堆栈中包含了绝大多数调试有关的信息。其中包括了异常位置（行号，列号），异常信息。
+
+#### 上报数据序列化
+
+ 由于通讯的时候只能以字符串方式传输，我们需要将对象进行序列化处理。 
+
+大概分成以下三步：
+
+- 将异常数据从属性中解构出来存入一个JSON对象
+- 将JSON对象转换为字符串
+- 将字符串转换为Base64
+
+后面后端也要做对应的反向操作。
+
+```javascript
+window.addEventListener('error', args => {
+  console.log(
+    'error event:', args
+  );
+  uploadError(args)
+  return true;
+}, true);
+function uploadError({
+    lineno,
+    colno,
+    error: {
+      stack
+    },
+    timeStamp,
+    message,
+    filename
+  }) {
+    // 过滤
+    const info = {
+      lineno,
+      colno,
+      stack,
+      timeStamp,
+      message,
+      filename
+    }
+  	const str = window.btoa(JSON.stringify(info))
+    const host = 'http://localhost:7001/monitor/error'
+    new Image().src = `${host}?info=${str}`
+```
+
+#### 异常收集
+
+ 异常上报的数据一定是要有一个后端服务接收才可以。 
+
+我们使用eggjs来进行演示
+
+##### 编写error上传接口
+
+ 首先在app/router.js添加一个新的路由 
+
+```javascript
+module.exports = app => {
+  const { router, controller } = app;
+  router.get('/', controller.home.index);
+  // 创建一个新的路由
+  router.get('/monitor/error', controller.monitor.index);
+};
+```
+
+ 创建一个新的controller (app/controller/monitor) 
+
+```javascript
+'use strict';
+
+const Controller = require('egg').Controller;
+
+class MonitorController extends Controller {
+  async index() {
+    const { ctx } = this;
+    const { info } = ctx.query
+    const json = JSON.parse(Buffer.from(info, 'base64').toString('utf-8'))
+    console.log('fronterror:', json)
+    ctx.body = '';
+  }
+}
+
+module.exports = MonitorController;
+```
+
+接收到的错误信息：
+
+![](./images/fronterror.png)
+
+##### 记入日志文件
+
+ 下一步就是讲错误记入日志。实现的方法可以自己用fs写，也可以借助log4js这样成熟的日志库。 
+
+ 当然在eggjs中是支持我们定制日志那么我么你就用这个功能定制一个前端错误日志好了。 
+
+ 在/config/config.default.js中增加一个定制日志配置 
+
+```javascript
+// 定义前端错误日志
+config.customLogger = {
+  frontendLogger : {
+    file: path.join(appInfo.root, 'logs/frontend.log')
+  }
+}
+```
+
+ 在/app/controller/monitor.js中添加日志记录 
+
+```javascript
+async index() {
+    const { ctx } = this;
+    const { info } = ctx.query
+    const json = JSON.parse(Buffer.from(info, 'base64').toString('utf-8'))
+    console.log('fronterror:', json)
+    // 记入错误日志
+    this.ctx.getLogger('frontendLogger').error(json)
+    ctx.body = '';
+  }
+```
+
+最后实现的效果：
+
+![](./images/fronterrorLog.png)
+
+### 异常分析
+
+ 谈到异常分析最重要的工作其实是将webpack混淆压缩的代码还原。 
+
+#### Webpack插件实现SourceMap上传
+
+在webpack的打包时会产生sourcemap文件，这个文件需要上传到异常监控服务器。这个功能我们试用webpack插件完成。
+
+##### 创建webpack插件
+
+```javascript
+const fs = require('fs')
+var http = require('http');
+
+class UploadSourceMapWebpackPlugin {
+  constructor(options) {
+    this.options = options
+  }
+
+  apply(compiler) {
+    // 打包结束后执行
+    compiler.hooks.done.tap("upload-sourcemap-plugin", status => {
+      console.log('webpack runing')
+    });
+  }
+}
+
+module.exports = UploadSourceMapWebpackPlugin;
+```
+
+##### 加载webpack插件
+
+```javascript
+// webpack.config.js
+// 自动上传Map
+UploadSourceMapWebpackPlugin = require('./plugin/uploadSourceMapWebPackPlugin')
+
+plugins: [
+    // 添加自动上传插件
+    new UploadSourceMapWebpackPlugin({
+      uploadUrl:'http://localhost:7001/monitor/sourcemap',
+      apiKey: 'kaikeba'
+    })
+  ]
+```
+
+##### 添加读取sourcemap读取逻辑
+
+在apply函数中增加读取sourcemap文件的逻辑
+
+```javascript
+// /plugin/uploadSourceMapWebPlugin.js
+const glob = require('glob')
+const path = require('path')
+apply(compiler) {
+  // 定义在打包后执行
+  compiler.hooks.done.tap('upload-sourecemap-plugin', async status => {
+    // 读取sourcemap文件
+    const list = glob.sync(path.join(status.compilation.outputOptions.path, `./**/*.{js.map,}`))
+    for (let filename of list) {
+      await this.upload(this.options.uploadUrl, filename)
+    }
+  })
+}
+```
+
+##### 实现http上传功能
+
+```javascript
+upload(url, file) {
+  return new Promise(resolve => {
+    const req = http.request(
+      `${url}?name=${path.basename(file)}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          Connection: "keep-alive",
+          "Transfer-Encoding": "chunked"
+        }
+      }
+    )
+    fs.createReadStream(file)
+      .on("data", chunk => {
+      req.write(chunk);
+    })
+      .on("end", () => {
+      req.end();
+      resolve()
+    });
+  })
+}
+```
+
+##### 服务器端添加上传接口
+
+```javascript
+// /backend/app/router.js
+module.exports = app => {
+  const { router, controller } = app;
+  router.get('/', controller.home.index);
+  router.get('/monitor/error', controller.monitor.index);
+  // 添加上传路由
+ router.post('/monitor/sourcemap',controller.monitor.upload)
+};
+```
+
+添加sourcemap上传接口
+
+```javascript
+// /backend/app/controller/monitor.js
+async upload() {
+    const { ctx } = this
+    const stream = ctx.req
+    const filename = ctx.query.name
+    const dir = path.join(this.config.baseDir, 'uploads')
+    // 判断upload目录是否存在
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir)
+    }
+
+    const target = path.join(dir, filename)
+    const writeStream = fs.createWriteStream(target)
+    stream.pipe(writeStream)
+}
+```
+
+最终效果：
+
+执行webpack打包时调用插件sourcemap被上传至服务器。
+
+![](./images/sourcemap.png)
+
+#### 解析ErrorStack
+
+先看一下我们的需求
+
+| 输入 | stack(错误栈) | ReferenceError: xxx is not defined\n' + ' at http://localhost:7001/public/bundle.e7877aa7bc4f04f5c33b.js:1:1392' |
+| ---- | ------------- | ------------------------------------------------------------ |
+|      | SourceMap     | 略                                                           |
+| 输出 | 源码错误栈    | { source: 'webpack:///src/index.js', line: 24, column: 4, name: 'xxx' } |
+
+##### 反序列Error对象
+
+首先创建一个新的Error对象 将错误栈设置到Error中，然后利用error-stack-parser这个npm库来转化为stackFrame
+
+```javascript
+const ErrorStackParser = require('error-stack-parser')
+/**
+ * 错误堆栈反序列化
+ * @param {*} stack 错误堆栈
+ */
+parseStackTrack(stack, message) {
+  const error = new Error(message)
+  error.stack = stack
+  const stackFrame = ErrorStackParser.parse(error)
+  return stackFrame
+}
+```
+
+运行效果
+
+![](./images/stackFrame.png)
+
+##### 解析ErrorStack
+
+下一步我们将错误栈中的代码位置转换为源码位置
+
+```javascript
+const { SourceMapConsumer } = require("source-map");
+async getOriginalErrorStack(stackFrame) {
+    const origin = []
+    for (let v of stackFrame) {
+        origin.push(await this.getOriginPosition(v))
+    }
+
+    // 销毁所有consumers
+    Object.keys(this.consumers).forEach(key => {
+        console.log('key:',key)
+        this.consumers[key].destroy()
+    })
+    return origin
+}
+
+async getOriginPosition(stackFrame) {
+    let { columnNumber, lineNumber, fileName } = stackFrame
+    fileName = path.basename(fileName)
+    console.log('filebasename',fileName)
+    // 判断是否存在
+    let consumer = this.consumers[fileName]
+
+    if (consumer === undefined) {
+        // 读取sourcemap
+        const sourceMapPath = path.resolve(this.sourceMapDir, fileName + '.map')
+        // 判断目录是否存在
+        if(!fs.existsSync(sourceMapPath)){
+            return stackFrame
+        }
+        const content = fs.readFileSync(sourceMapPath, 'utf8')
+        consumer = await new SourceMapConsumer(content, null);
+        this.consumers[fileName] = consumer
+    }
+    const parseData = consumer.originalPositionFor({ line:lineNumber, column:columnNumber })
+    return parseData
+}
+```
+
+##### 将源码位置记入日志
+
+```javascript
+async index() {
+    console.log
+    const { ctx } = this;
+    const { info } = ctx.query
+    const json = JSON.parse(Buffer.from(info, 'base64').toString('utf-8'))
+    console.log('fronterror:', json)
+
+    // 转换为源码位置
+    const stackParser = new StackParser(path.join(this.config.baseDir, 'uploads'))
+    const stackFrame = stackParser.parseStackTrack(json.stack, json.message)
+    const originStack = await stackParser.getOriginalErrorStack(stackFrame)
+    this.ctx.getLogger('frontendLogger').error(json,originStack)
+
+    ctx.body = '';
+}
+```
+
+运行效果:
 
 
-### 打包上传sourcemap
+
+### 总结
 
 
 
-### 记录日志
+### TO-DO-LIST
 
 
-
-### 错误还原
 
 
 
